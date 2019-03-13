@@ -1,0 +1,204 @@
+version: 2.1
+
+jobs:
+  prepare:
+    docker:
+      - image: composer:1.10
+
+    working_directory: ~/project
+
+    steps:
+      - checkout
+
+      - run:
+          name: Validating composer file
+          command: composer validate --no-check-all --no-check-publish
+
+      - run:
+          name: Installing dependencies
+          command: composer install --no-interaction
+
+      - run:
+          name: Installing tools
+          command: composer bin all install --no-interaction
+
+      - persist_to_workspace:
+          root: ~/project
+          paths:
+            - vendor
+            - tools/phpstan/vendor/
+            - tools/phpunit/vendor/
+            - tools/squizlabs/vendor/
+
+  analysis:
+    docker:
+      - image: php:7.4-cli-alpine3.11
+
+    working_directory: ~/project
+
+    steps:
+      - checkout
+
+      - attach_workspace:
+          at: ~/project
+
+      - run:
+          name: Anlaysing code
+          command: tools/phpstan/vendor/bin/phpstan analyze src tests
+
+  style-check:
+    docker:
+      - image: php:7.4-cli-alpine3.11
+
+    working_directory: ~/project
+
+    steps:
+      - checkout
+
+      - attach_workspace:
+          at: ~/project
+
+      - run:
+          name: Checking code style
+          command: tools/squizlabs/vendor/bin/phpcs -p -s
+
+  phpunit:
+    docker:
+      - image: php:7.4-cli-alpine3.11
+
+    working_directory: ~/project
+
+    steps:
+      - checkout
+
+      - attach_workspace:
+          at: ~/project
+
+      - run:
+          name: Executing unit tests
+          command: php tools/phpunit/vendor/bin/phpunit --coverage-text
+
+      - store_test_results:
+          path: .build/test-results
+
+  build:
+    docker:
+      - image: composer:1.10
+
+    working_directory: ~/project
+
+    steps:
+      - checkout
+
+      - run:
+          name: Build
+          command: bin/build.sh
+
+      - run:
+          name: Create Archive
+          command: zip -q -r release.zip build/
+
+      - persist_to_workspace:
+          root: ~/project
+          paths:
+            - release.zip
+
+      - store_artifacts:
+          path: ~/project/release.zip
+
+  deploy:
+    docker:
+      - image: circleci/golang:1.11.3
+
+    working_directory: ~/project
+
+    steps:
+      - attach_workspace:
+          at: ~/project
+
+      - run:
+          name: Download github-release
+          command: go get github.com/tcnksm/ghr
+
+      - run:
+          name: Deploy phar
+          command: ghr -t ${GITHUB_TOKEN} -u ${CIRCLE_PROJECT_USERNAME} -r ${CIRCLE_PROJECT_REPONAME} -c ${CIRCLE_SHA1} ${CIRCLE_TAG} release.zip
+
+workflows:
+  analyse-test:
+    jobs:
+      - prepare
+
+      - analysis:
+          requires:
+            - prepare
+
+      - style-check:
+          requires:
+            - prepare
+
+      - phpunit:
+          requires:
+            - prepare
+
+  analyse-build-deploy:
+    jobs:
+      - prepare:
+          filters:
+            branches:
+              ignore: /.*/
+
+            tags:
+              only: /^[0-9]+(\.[0-9]+)*$/
+
+      - analysis:
+          requires:
+            - prepare
+
+          filters:
+            tags:
+              only: /^[0-9]+(\.[0-9]+)*$/
+
+      - style-check:
+          requires:
+            - prepare
+
+          filters:
+            tags:
+              only: /^[0-9]+(\.[0-9]+)*$/
+
+      - phpunit:
+          requires:
+            - prepare
+
+          filters:
+            tags:
+              only: /^[0-9]+(\.[0-9]+)*$/
+
+      - hold:
+          type: approval
+
+          requires:
+            - analysis
+            - style-check
+            - phpunit
+
+          filters:
+            tags:
+              only: /^[0-9]+(\.[0-9]+)*$/
+
+      - build:
+          requires:
+            - hold
+
+          filters:
+            tags:
+              only: /^[0-9]+(\.[0-9]+)*$/
+
+      - deploy:
+          requires:
+            - build
+
+          filters:
+            tags:
+              only: /^[0-9]+(\.[0-9]+)*$/

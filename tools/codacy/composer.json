@@ -1,0 +1,6 @@
+{
+    "name": "root/codacy",
+    "require": {
+        "codacy/coverage": "^1.4"
+    }
+}
